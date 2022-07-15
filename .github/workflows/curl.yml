@@ -1,0 +1,16 @@
+name: Curl test
+
+on:
+  pull_request:
+    branches:
+    - "master"
+
+jobs:
+  build:
+    runs-on: [ self-hosted, "aws:instancetype:c6i.xlarge" , "aws:ami:actions-runner-ubuntu" ]
+    steps:
+
+    - name: Curl
+      uses: wei/curl@v1.1.1
+      with:
+        args: -v https://google.com
