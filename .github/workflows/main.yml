@@ -1,0 +1,103 @@
+name: promote-stg.4988b21
+
+on:
+  workflow_dispatch: 
+    inputs:
+      change_info:
+        description: 'Commit that triggered change'
+        required: false
+        type: string
+      event_name:
+        description: "Event that triggered this workflow"
+        required: false
+        type: string
+
+concurrency: promote-stg.4988b21
+
+env:
+  SLACK_WEBHOOK_URL: "https://2k-publishing.slack.com/services/hooks/jenkins-ci?token=${{ secrets.SLACK_API_KEY }}"
+
+jobs:
+  promote-tag:
+    uses: ./.github/workflows/promote-tag.yaml
+    permissions: write-all
+    with:
+      tag: stable
+      promote: master
+    secrets:
+      SLACK_API_KEY: ${{ secrets.SLACK_API_KEY }}
+  
+  wait-argo:
+    needs: promote-tag
+    permissions: write-all
+    runs-on: [ self-hosted, "aws:instancetype:c6i.xlarge" , "aws:ami:actions-runner-ubuntu" ]
+    steps:
+      - uses: clowdhaus/argo-cd-action/@main
+        env:
+          # Only required for first step in job where API is called
+          # All subsequent setps in a job will not re-download the CLI
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          command: app wait stg-4988b21
+          options: --server ${{ secrets.ARGO_SERVER }} --auth-token ${{ secrets.ARGO_ADMIN }}
+
+  run-e2e:
+    needs: wait-argo
+    uses: 2kg-coretech/mm-e2e/.github/workflows/e2e-test.yaml@master
+    permissions: write-all
+    with:
+      environment: stg.4988b21
+      discovery: stg.discovery.api.2kcoretech.online
+      matchmaking_region: gew2
+      super_admin_secret: a0054f865b294b999563bdda5f666550
+      change_info: ${{ inputs.change_info }}
+      event_name: ${{ inputs.event_name }}
+    secrets:
+      SLACK_API_KEY: ${{ secrets.SLACK_API_KEY }}
+      PERSONAL_ACCESS_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+      ENTERPRISE_ACCESS_TOKEN: ${{ secrets.ENTERPRISE_ACCESS_TOKEN }}
+
+  publish-confluence:
+    needs: run-e2e
+    permissions: write-all
+    runs-on: [self-hosted, linux, x64]
+    steps:
+      - uses: act10ns/slack@v1.5.0
+        with:
+          status: starting
+          message: Publishing confluence page for `staging` -> https://ctp-game.2kcoretech.online/job/matchmaker/job/gh-hook/job/mm-confluence-prod/
+
+      - name: Webhook
+        uses: joelwmale/webhook-action@master
+        with:
+          url: https://ctp-game.2kcoretech.online/generic-webhook-trigger/invoke?token=gh-hook-mm-confluence
+          headers: '{"repository": "joelwmale/webhook-action"}'
+          body: '{"ref_type":"tag","sender":{"login":"github-action","environment":"staging"}}'
+  
+  publish-perforce:
+    needs: run-e2e
+    permissions: write-all
+    runs-on: [ self-hosted, linux, x64 ]
+    steps:
+      - uses: act10ns/slack@v1.5.0
+        with:
+          status: starting
+          message: Publishing Perforce for `staging` -> https://ctp-game.2kcoretech.online/job/matchmaker/job/gh-hook/job/mmm-perforce-publish-prod/
+
+      - name: Webhook
+        uses: joelwmale/webhook-action@master
+        with:
+          url: https://ctp-game.2kcoretech.online/generic-webhook-trigger/invoke?token=gh-hook-mm-perforce-publisher
+          headers: '{"repository": "joelwmale/webhook-action"}'
+          body: '{"ref_type":"tag","sender":{"login":"github-action","environment":"staging"}}'
+
+  promote-pre:
+    needs: run-e2e
+    permissions: write-all
+    runs-on: ubuntu-latest
+    steps:
+      - uses: joelwmale/webhook-action@master
+        with:
+          url: https://api.github.com/repos/2kg-coretech/mm-service-deployment/actions/workflows/promote-pre.c71f50c.yaml/dispatches
+          headers: '{"Accept": "application/vnd.github+json", "Authorization": "token ${{ secrets.PERSONAL_ACCESS_TOKEN }}"}'
+          body: '{"ref":"master", "inputs":{"event_name":"${{ inputs.event_name }}", "change_info":"${{ inputs.change_info }}"}}'
